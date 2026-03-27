@@ -162,6 +162,7 @@ workflows:
         APP_NAME: ${APP_NAME}
         PROJECT_SOURCE_URL: ${PROJECT_SOURCE_URL}
         WEBHOOK_URL: ${WEBHOOK_URL}
+        GRADLE_OPTS: "-Dorg.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m"
       node: 22
       java: 17
     scripts:
@@ -202,6 +203,12 @@ workflows:
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/project/apps/mobile/android"
+
+          # Increase Gradle daemon memory for native builds (Skia, Reanimated CMake)
+          mkdir -p ~/.gradle
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
+          echo "org.gradle.parallel=true" >> gradle.properties
+
           ./gradlew assembleRelease
 
     artifacts:
