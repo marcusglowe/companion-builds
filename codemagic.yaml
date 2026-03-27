@@ -1,0 +1,224 @@
+workflows:
+  ios-companion-build:
+    name: iOS Companion Build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      vars:
+        APPLE_CERT_P12_BASE64: ${APPLE_CERT_P12_BASE64}
+        APPLE_CERT_PASSWORD: ${APPLE_CERT_PASSWORD}
+        APPLE_PROVISIONING_PROFILE_BASE64: ${APPLE_PROVISIONING_PROFILE_BASE64}
+        BUNDLE_ID: ${BUNDLE_ID}
+        APP_NAME: ${APP_NAME}
+        PROJECT_SOURCE_URL: ${PROJECT_SOURCE_URL}
+        WEBHOOK_URL: ${WEBHOOK_URL}
+      node: 22
+      xcode: latest
+      cocoapods: default
+    scripts:
+      - name: Download and extract project source
+        script: |
+          set -euo pipefail
+          mkdir -p "$CM_BUILD_DIR/project"
+          curl -fsSL "$PROJECT_SOURCE_URL" -o "$CM_BUILD_DIR/project/source.tar.gz"
+          tar -xzf "$CM_BUILD_DIR/project/source.tar.gz" -C "$CM_BUILD_DIR/project" --strip-components=1
+
+      - name: Install dependencies
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+          npm install
+
+      - name: Decode and install signing certificate
+        script: |
+          set -euo pipefail
+
+          KEYCHAIN_PATH="$HOME/Library/Keychains/build.keychain-db"
+          KEYCHAIN_PASSWORD="$(openssl rand -base64 32)"
+
+          security create-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security set-keychain-settings -lut 3600 "$KEYCHAIN_PATH"
+          security unlock-keychain -p "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+          security list-keychains -d user -s "$KEYCHAIN_PATH" "$(security list-keychains -d user | tr -d '"')"
+
+          CERT_PATH="$CM_BUILD_DIR/certificate.p12"
+          echo "$APPLE_CERT_P12_BASE64" | base64 --decode > "$CERT_PATH"
+          security import "$CERT_PATH" \
+            -k "$KEYCHAIN_PATH" \
+            -P "$APPLE_CERT_PASSWORD" \
+            -T /usr/bin/codesign \
+            -T /usr/bin/security
+          security set-key-partition-list -S apple-tool:,apple: -s -k "$KEYCHAIN_PASSWORD" "$KEYCHAIN_PATH"
+
+          rm -f "$CERT_PATH"
+
+      - name: Install provisioning profile
+        script: |
+          set -euo pipefail
+
+          PROFILE_DIR="$HOME/Library/MobileDevice/Provisioning Profiles"
+          mkdir -p "$PROFILE_DIR"
+
+          PROFILE_PATH="$PROFILE_DIR/build.mobileprovision"
+          echo "$APPLE_PROVISIONING_PROFILE_BASE64" | base64 --decode > "$PROFILE_PATH"
+
+          PROFILE_UUID=$(/usr/libexec/PlistBuddy -c "Print UUID" /dev/stdin <<< \
+            "$(security cms -D -i "$PROFILE_PATH")")
+          cp "$PROFILE_PATH" "$PROFILE_DIR/$PROFILE_UUID.mobileprovision"
+
+      - name: Update app.json with custom bundle ID and app name
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            appJson.expo.name = process.env.APP_NAME;
+            appJson.expo.ios = appJson.expo.ios || {};
+            appJson.expo.ios.bundleIdentifier = process.env.BUNDLE_ID;
+            fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2));
+          "
+
+      - name: Run Expo prebuild
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+          npx expo prebuild --platform ios --no-install
+
+      - name: Install CocoaPods
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile/ios"
+          pod install
+
+      - name: Build IPA
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile/ios"
+
+          WORKSPACE=$(find . -name "*.xcworkspace" -maxdepth 1 | head -1)
+          SCHEME=$(xcodebuild -list -workspace "$WORKSPACE" -json \
+            | python3 -c "import sys,json; print(json.load(sys.stdin)['workspace']['schemes'][0])")
+
+          ARCHIVE_PATH="$CM_BUILD_DIR/build/app.xcarchive"
+          EXPORT_PATH="$CM_BUILD_DIR/build/export"
+
+          xcodebuild archive \
+            -workspace "$WORKSPACE" \
+            -scheme "$SCHEME" \
+            -archivePath "$ARCHIVE_PATH" \
+            -configuration Release \
+            CODE_SIGN_STYLE=Manual \
+            DEVELOPMENT_TEAM="" \
+            -allowProvisioningUpdates
+
+          cat > "$CM_BUILD_DIR/ExportOptions.plist" << PLIST
+          <?xml version="1.0" encoding="UTF-8"?>
+          <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+          <plist version="1.0">
+          <dict>
+            <key>method</key>
+            <string>development</string>
+            <key>teamID</key>
+            <string></string>
+            <key>signingStyle</key>
+            <string>manual</string>
+          </dict>
+          </plist>
+          PLIST
+
+          xcodebuild -exportArchive \
+            -archivePath "$ARCHIVE_PATH" \
+            -exportPath "$EXPORT_PATH" \
+            -exportOptionsPlist "$CM_BUILD_DIR/ExportOptions.plist"
+
+    artifacts:
+      - "$CM_BUILD_DIR/build/export/*.ipa"
+
+    publishing:
+      scripts:
+        - name: Notify webhook
+          script: |
+            if [ -n "${WEBHOOK_URL:-}" ]; then
+              BUILD_ARTIFACT=$(find "$CM_BUILD_DIR/build/export" -name "*.ipa" | head -1)
+              curl -fsSL -X POST "$WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"buildId\": \"$CM_BUILD_ID\",
+                  \"status\": \"$CM_BUILD_STEP_STATUS\",
+                  \"platform\": \"ios\",
+                  \"artifactPath\": \"$BUILD_ARTIFACT\"
+                }"
+            fi
+
+  android-companion-build:
+    name: Android Companion Build
+    instance_type: mac_mini_m2
+    max_build_duration: 60
+    environment:
+      vars:
+        BUNDLE_ID: ${BUNDLE_ID}
+        APP_NAME: ${APP_NAME}
+        PROJECT_SOURCE_URL: ${PROJECT_SOURCE_URL}
+        WEBHOOK_URL: ${WEBHOOK_URL}
+      node: 22
+      java: 17
+    scripts:
+      - name: Download and extract project source
+        script: |
+          set -euo pipefail
+          mkdir -p "$CM_BUILD_DIR/project"
+          curl -fsSL "$PROJECT_SOURCE_URL" -o "$CM_BUILD_DIR/project/source.tar.gz"
+          tar -xzf "$CM_BUILD_DIR/project/source.tar.gz" -C "$CM_BUILD_DIR/project" --strip-components=1
+
+      - name: Install dependencies
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+          npm install
+
+      - name: Update app.json with custom package name and app name
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+
+          node -e "
+            const fs = require('fs');
+            const appJson = JSON.parse(fs.readFileSync('app.json', 'utf8'));
+            appJson.expo.name = process.env.APP_NAME;
+            appJson.expo.android = appJson.expo.android || {};
+            appJson.expo.android.package = process.env.BUNDLE_ID;
+            fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2));
+          "
+
+      - name: Run Expo prebuild
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile"
+          npx expo prebuild --platform android --no-install
+
+      - name: Build APK
+        script: |
+          set -euo pipefail
+          cd "$CM_BUILD_DIR/project/apps/mobile/android"
+          ./gradlew assembleRelease
+
+    artifacts:
+      - "$CM_BUILD_DIR/project/apps/mobile/android/app/build/outputs/apk/release/*.apk"
+
+    publishing:
+      scripts:
+        - name: Notify webhook
+          script: |
+            if [ -n "${WEBHOOK_URL:-}" ]; then
+              BUILD_ARTIFACT=$(find "$CM_BUILD_DIR/project/apps/mobile/android/app/build/outputs/apk/release" -name "*.apk" | head -1)
+              curl -fsSL -X POST "$WEBHOOK_URL" \
+                -H "Content-Type: application/json" \
+                -d "{
+                  \"buildId\": \"$CM_BUILD_ID\",
+                  \"status\": \"$CM_BUILD_STEP_STATUS\",
+                  \"platform\": \"android\",
+                  \"artifactPath\": \"$BUILD_ARTIFACT\"
+                }"
+            fi
