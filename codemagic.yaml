@@ -199,18 +199,22 @@ workflows:
           cd "$CM_BUILD_DIR/project/apps/mobile"
           npx expo prebuild --platform android --no-install
 
-      - name: Generate debug keystore
+      - name: Setup Android signing
         script: |
           set -euo pipefail
-          KEYSTORE_PATH="$CM_BUILD_DIR/project/apps/mobile/android/app/debug.keystore"
-          if [ ! -f "$KEYSTORE_PATH" ]; then
-            keytool -genkeypair \
-              -v -keystore "$KEYSTORE_PATH" \
-              -alias androiddebugkey \
-              -keyalg RSA -keysize 2048 -validity 10000 \
-              -storepass android -keypass android \
-              -dname "CN=Debug,O=Android,C=US"
-          fi
+          KEYSTORE_PATH="$CM_BUILD_DIR/keystore.jks"
+          keytool -genkeypair \
+            -v -keystore "$KEYSTORE_PATH" \
+            -alias companionkey \
+            -keyalg RSA -keysize 2048 -validity 10000 \
+            -storepass companion123 -keypass companion123 \
+            -dname "CN=Anything Companion,O=Anything,C=US"
+
+          # Set Codemagic signing env vars that Expo's build.gradle references
+          echo "CM_KEYSTORE=$KEYSTORE_PATH" >> "$CM_ENV"
+          echo "CM_KEY_ALIAS=companionkey" >> "$CM_ENV"
+          echo "CM_KEYSTORE_PASSWORD=companion123" >> "$CM_ENV"
+          echo "CM_KEY_PASSWORD=companion123" >> "$CM_ENV"
 
       - name: Build APK
         script: |
