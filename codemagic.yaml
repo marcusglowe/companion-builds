@@ -193,18 +193,12 @@ workflows:
             fs.writeFileSync('app.json', JSON.stringify(appJson, null, 2));
           "
 
-      - name: Run Expo prebuild
+      - name: Run Expo prebuild and build APK
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/project/apps/mobile"
-          npx expo prebuild --platform android --no-install
 
-      - name: Setup Android signing and build APK
-        script: |
-          set -euo pipefail
-          cd "$CM_BUILD_DIR/project/apps/mobile/android"
-
-          # Generate a signing keystore
+          # Generate signing keystore BEFORE prebuild so Expo can reference it
           KEYSTORE_PATH="$CM_BUILD_DIR/keystore.jks"
           keytool -genkeypair \
             -v -keystore "$KEYSTORE_PATH" \
@@ -213,15 +207,18 @@ workflows:
             -storepass companion123 -keypass companion123 \
             -dname "CN=Anything Companion,O=Anything,C=US"
 
-          # Increase Gradle daemon memory for native builds (Skia, Reanimated CMake)
-          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
-          echo "org.gradle.parallel=true" >> gradle.properties
-
-          # Export signing env vars so Expo's generated build.gradle can find them
           export CM_KEYSTORE="$KEYSTORE_PATH"
           export CM_KEY_ALIAS="companionkey"
           export CM_KEYSTORE_PASSWORD="companion123"
           export CM_KEY_PASSWORD="companion123"
+
+          npx expo prebuild --platform android --no-install
+
+          cd android
+
+          # Increase Gradle daemon memory for native builds
+          echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
+          echo "org.gradle.parallel=true" >> gradle.properties
 
           ./gradlew assembleRelease
 
