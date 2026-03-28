@@ -199,13 +199,25 @@ workflows:
           cd "$CM_BUILD_DIR/project/apps/mobile"
           npx expo prebuild --platform android --no-install
 
+      - name: Generate debug keystore
+        script: |
+          set -euo pipefail
+          KEYSTORE_PATH="$CM_BUILD_DIR/project/apps/mobile/android/app/debug.keystore"
+          if [ ! -f "$KEYSTORE_PATH" ]; then
+            keytool -genkeypair \
+              -v -keystore "$KEYSTORE_PATH" \
+              -alias androiddebugkey \
+              -keyalg RSA -keysize 2048 -validity 10000 \
+              -storepass android -keypass android \
+              -dname "CN=Debug,O=Android,C=US"
+          fi
+
       - name: Build APK
         script: |
           set -euo pipefail
           cd "$CM_BUILD_DIR/project/apps/mobile/android"
 
           # Increase Gradle daemon memory for native builds (Skia, Reanimated CMake)
-          mkdir -p ~/.gradle
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
           echo "org.gradle.parallel=true" >> gradle.properties
 
