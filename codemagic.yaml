@@ -214,7 +214,13 @@ workflows:
 
           npx expo prebuild --platform android --no-install
 
+          # Patch build.gradle to make signing config optional
+          # Expo generates a build.gradle that crashes when CM_KEYSTORE is empty
           cd android
+          if grep -q "CM_KEYSTORE" app/build.gradle; then
+            sed -i '' 's|storeFile file(System.getenv("CM_KEYSTORE") ?: "/")|storeFile System.getenv("CM_KEYSTORE") ? file(System.getenv("CM_KEYSTORE")) : null|g' app/build.gradle
+            sed -i '' '/signingConfig signingConfigs.release/d' app/build.gradle
+          fi
 
           # Increase Gradle daemon memory for native builds
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
