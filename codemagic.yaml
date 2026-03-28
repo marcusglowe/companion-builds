@@ -220,10 +220,10 @@ workflows:
           echo "org.gradle.jvmargs=-Xmx4g -XX:MaxMetaspaceSize=512m" >> gradle.properties
           echo "org.gradle.parallel=true" >> gradle.properties
 
-          ./gradlew assembleRelease
+          ./gradlew assembleDebug
 
     artifacts:
-      - "$CM_BUILD_DIR/project/apps/mobile/android/app/build/outputs/apk/release/*.apk"
+      - "$CM_BUILD_DIR/project/apps/mobile/android/app/build/outputs/apk/**/*.apk"
 
     publishing:
       scripts:
